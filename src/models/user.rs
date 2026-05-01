@@ -1,0 +1,117 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use uuid::Uuid;
+use validator::Validate;
+
+/// Role of a user within the platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "user_role", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum UserRole {
+    /// Hospital administrator
+    HospitalAdmin,
+    /// Clinical staff member
+    Staff,
+    /// NexusCare platform super-admin
+    SuperAdmin,
+}
+
+/// A platform user — can be a hospital admin or staff member.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct User {
+    pub id: Uuid,
+    pub hospital_id: Option<Uuid>,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    #[serde(skip_serializing)]
+    pub password_hash: String,
+    pub role: UserRole,
+    /// Display label shown in the header, e.g. "LUTH Admin"
+    pub role_label: Option<String>,
+    /// URL to the user's avatar image (shown in the top-right header)
+    pub avatar_url: Option<String>,
+    pub is_active: bool,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Payload for creating a new user account.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct CreateUserRequest {
+    pub hospital_id: Option<Uuid>,
+
+    #[validate(length(min = 1, max = 100, message = "First name is required"))]
+    pub first_name: String,
+
+    #[validate(length(min = 1, max = 100, message = "Last name is required"))]
+    pub last_name: String,
+
+    #[validate(email(message = "A valid email address is required"))]
+    pub email: String,
+
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
+    pub password: String,
+
+    pub role: UserRole,
+}
+
+/// Login request payload.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+pub struct LoginRequest {
+    #[validate(email)]
+    pub email: String,
+
+    #[validate(length(min = 1))]
+    pub password: String,
+}
+
+/// Safe user response (no password hash).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserResponse {
+    pub id: Uuid,
+    pub hospital_id: Option<Uuid>,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub role: UserRole,
+    pub role_label: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_active: bool,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<User> for UserResponse {
+    fn from(u: User) -> Self {
+        Self {
+            id: u.id,
+            hospital_id: u.hospital_id,
+            first_name: u.first_name,
+            last_name: u.last_name,
+            email: u.email,
+            role: u.role,
+            role_label: u.role_label,
+            avatar_url: u.avatar_url,
+            is_active: u.is_active,
+            last_login_at: u.last_login_at,
+            created_at: u.created_at,
+        }
+    }
+}
+
+/// JWT claims payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    /// Subject (user id)
+    pub sub: String,
+    pub email: String,
+    pub role: UserRole,
+    pub hospital_id: Option<String>,
+    /// Expiry (Unix timestamp)
+    pub exp: usize,
+    /// Issued at (Unix timestamp)
+    pub iat: usize,
+}
