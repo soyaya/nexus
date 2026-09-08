@@ -49,6 +49,9 @@ const RECONCILE_STALE_MINUTES: i64 = 30;
 const RECONCILE_CLOCKOUT_DELAY_MINUTES: i64 = 10;
 
 const ROOM_NAME_PREFIX: &str = "shift-";
+
+/// A clinician must be within this many km of the hospital to join the call.
+const CALL_GEOFENCE_KM: f64 = 10.0;
 const HANDOVER_REMINDER_EVENT: &str = "handover_reminder_sent";
 
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +85,12 @@ pub enum VideoServiceError {
 
     #[error("This consultation has already ended")]
     SessionEnded,
+
+    #[error("Your location is required to join this consultation")]
+    LocationRequired,
+
+    #[error("You are {distance_km:.1} km from the hospital — must be within {limit_km:.0} km to join")]
+    OutsideGeofence { distance_km: f64, limit_km: f64 },
 
     #[error("LiveKit is not configured")]
     NotConfigured,
@@ -223,6 +232,27 @@ impl VideoService {
         // rather than a silent downgrade, so the client learns it was wrong.
         if mode == JoinMode::Observer && role != ParticipantRole::HospitalObserver {
             return Err(VideoServiceError::NotAuthorized);
+        }
+
+        // Geofence: a clinician must be within 10 km of the hospital to join.
+        // Only enforced when the hospital has coordinates on file; observers and
+        // hospitals whose location is unknown are exempt.
+        if role == ParticipantRole::Clinician {
+            if let Some((h_lat, h_lng)) =
+                self.shift_repo.get_hospital_coordinates(shift.hospital_id).await?
+            {
+                let (lat, lng) = match (request.lat, request.lng) {
+                    (Some(lat), Some(lng)) => (lat, lng),
+                    _ => return Err(VideoServiceError::LocationRequired),
+                };
+                let distance_km = crate::utils::geo::haversine_km(h_lat, h_lng, lat, lng);
+                if distance_km > CALL_GEOFENCE_KM {
+                    return Err(VideoServiceError::OutsideGeofence {
+                        distance_km,
+                        limit_km: CALL_GEOFENCE_KM,
+                    });
+                }
+            }
         }
 
         let session = self.ensure_session_for_shift(&shift, user_id).await?;

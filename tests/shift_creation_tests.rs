@@ -34,6 +34,7 @@ fn create_valid_shift_request() -> CreateShiftRequest {
         equipment: vec![],
         requirements: vec!["Valid medical license".to_string()],
         notes: Some("Urgent coverage needed".to_string()),
+        attachment_urls: vec![],
         broadcast_consent_confirmed: true,
     }
 }

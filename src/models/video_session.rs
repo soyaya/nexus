@@ -186,6 +186,13 @@ pub struct JoinConsultRequest {
     /// Free text, stored in the audit trail only.
     #[serde(default)]
     pub device_label: Option<String>,
+    /// Worker's current GPS latitude — required for a clinician to join when the
+    /// hospital has a location on file (10 km geofence). Ignored for observers.
+    #[serde(default)]
+    pub lat: Option<f64>,
+    /// Worker's current GPS longitude (pairs with `lat`).
+    #[serde(default)]
+    pub lng: Option<f64>,
 }
 
 /// The shift a consultation belongs to, denormalised for the join screen.

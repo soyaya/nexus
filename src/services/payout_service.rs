@@ -34,6 +34,20 @@ pub fn split_payout(gross_kobo: i64) -> (i64, i64, i64) {
     (gross_kobo, fee, net)
 }
 
+/// `(gross, fee, net)` using an admin-configured fee percent and optional cap:
+/// `fee = min(round(gross * percent / 100), cap)`. Falls back to the same
+/// behaviour as `split_payout` when percent = 10 and no cap.
+pub fn split_payout_with(gross_kobo: i64, fee_percent: f64, cap_kobo: Option<i64>) -> (i64, i64, i64) {
+    let pct = fee_percent.clamp(0.0, 100.0);
+    let mut fee = ((gross_kobo as f64) * pct / 100.0).round() as i64;
+    if let Some(cap) = cap_kobo {
+        fee = fee.min(cap.max(0));
+    }
+    fee = fee.clamp(0, gross_kobo);
+    let net = gross_kobo - fee;
+    (gross_kobo, fee, net)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PayoutServiceError {
     #[error("database error: {0}")]
@@ -132,9 +146,28 @@ impl PayoutService {
         Ok(rows)
     }
 
+    /// Read the admin-configured platform fee percent + optional cap. Falls
+    /// back to the hardcoded 10% / no-cap if the settings row is missing.
+    async fn platform_fee_config(&self) -> (f64, Option<i64>) {
+        let row: Option<(f64, Option<i64>)> = sqlx::query_as(
+            "SELECT platform_fee_percent::DOUBLE PRECISION, platform_fee_cap_kobo \
+             FROM platform_settings WHERE singleton = 'global'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        row.unwrap_or((
+            (PLATFORM_FEE_NUMERATOR as f64 / PLATFORM_FEE_DENOMINATOR as f64) * 100.0,
+            None,
+        ))
+    }
+
     async fn process_one(&self, p: &PayableShift) -> Result<bool, PayoutServiceError> {
         let gross = p.grand_total_kobo.unwrap_or(0);
-        let (gross, fee, net) = split_payout(gross);
+        // Apply the admin-configured fee percent + cap at transfer time.
+        let (fee_percent, cap_kobo) = self.platform_fee_config().await;
+        let (gross, fee, net) = split_payout_with(gross, fee_percent, cap_kobo);
 
         let min_payout = min_payout_kobo();
         if net < min_payout {
@@ -680,6 +713,21 @@ mod tests {
         assert_eq!(g, 9);
         assert_eq!(f, 0);
         assert_eq!(n, 9);
+        assert_eq!(g, f + n);
+    }
+
+    #[test]
+    fn configurable_fee_percent_and_cap() {
+        // 10% of ₦10,000 = ₦1,000 fee, no cap.
+        assert_eq!(split_payout_with(1_000_000, 10.0, None), (1_000_000, 100_000, 900_000));
+        // Cap below the computed fee wins.
+        assert_eq!(split_payout_with(1_000_000, 10.0, Some(50_000)), (1_000_000, 50_000, 950_000));
+        // Cap above the computed fee is a no-op.
+        assert_eq!(split_payout_with(1_000_000, 10.0, Some(500_000)), (1_000_000, 100_000, 900_000));
+        // 0% fee.
+        assert_eq!(split_payout_with(1_000_000, 0.0, None), (1_000_000, 0, 1_000_000));
+        // Invariant: gross == fee + net for arbitrary inputs.
+        let (g, f, n) = split_payout_with(777_777, 7.5, Some(40_000));
         assert_eq!(g, f + n);
     }
 }

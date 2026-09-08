@@ -1550,6 +1550,14 @@ impl ShiftService {
 
         let critical_patients = serde_json::Value::Array(request.critical_patients.clone());
         let pending_tasks = serde_json::Value::Array(request.pending_tasks.clone());
+        // Cloudinary URLs the frontend attached, stored as a JSON string array.
+        let image_urls = serde_json::Value::Array(
+            request
+                .image_urls
+                .iter()
+                .map(|u| serde_json::Value::String(u.clone()))
+                .collect(),
+        );
 
         let row = self
             .shift_repo
@@ -1560,10 +1568,78 @@ impl ShiftService {
                 &pending_tasks,
                 &request.instructions,
                 request.equipment_status.as_deref(),
+                &image_urls,
             )
             .await?;
 
         Ok(row)
+    }
+
+    /// Worker raises a reminder/appeal when the hospital hasn't approved the
+    /// handover within a day. Records the appeal and emails the hospital.
+    pub async fn appeal_handover(
+        &self,
+        shift_id: Uuid,
+        worker_user_id: Uuid,
+        note: Option<String>,
+    ) -> Result<crate::models::shift::HandoverResponse, ShiftServiceError> {
+        let shift = self
+            .shift_repo
+            .get_by_id(shift_id)
+            .await?
+            .ok_or(ShiftServiceError::NotFound(shift_id))?;
+
+        // Only the assigned worker may appeal their own handover.
+        let clinician_id = self
+            .shift_repo
+            .find_clinician_id_for_user(worker_user_id)
+            .await?;
+        if clinician_id.is_none() || clinician_id != shift.assigned_clinician_id {
+            return Err(ShiftServiceError::Forbidden);
+        }
+
+        let handover = self
+            .shift_repo
+            .get_handover(shift_id)
+            .await?
+            .ok_or(ShiftServiceError::HandoverNotFound)?;
+        if handover.hospital_approved_at.is_some() {
+            return Err(ShiftServiceError::InvalidStatus(
+                "Handover has already been approved".to_string(),
+            ));
+        }
+        if handover.appeal_raised_at.is_some() {
+            return Err(ShiftServiceError::InvalidStatus(
+                "An appeal has already been raised for this handover".to_string(),
+            ));
+        }
+
+        // The repo guard enforces the one-day wait atomically.
+        let raised = self
+            .shift_repo
+            .raise_handover_appeal(shift_id, note.as_deref())
+            .await?;
+        if raised.is_none() {
+            return Err(ShiftServiceError::InvalidStatus(
+                "You can only appeal a day after submitting the handover".to_string(),
+            ));
+        }
+
+        // Nudge the hospital by email (best-effort).
+        if let Ok(Some((_hospital_name, hospital_email))) =
+            self.shift_repo.get_hospital_contact(shift.hospital_id).await
+        {
+            let content =
+                email_templates::handover_appeal_raised(&shift.role_title, note.as_deref());
+            if let Err(e) = self.email_outbox.enqueue_email(&hospital_email, &content).await {
+                eprintln!("Warning: Failed to queue handover appeal email: {e}");
+            }
+        }
+
+        self.shift_repo
+            .get_handover(shift_id)
+            .await?
+            .ok_or(ShiftServiceError::HandoverNotFound)
     }
 
     /// Worker clocks out. Requires a submitted handover
