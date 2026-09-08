@@ -542,6 +542,8 @@ async fn a_worker_cannot_request_observer_mode() {
             JoinConsultRequest {
                 mode: Some(JoinMode::Observer),
                 device_label: None,
+                lat: None,
+                lng: None,
             },
         )
         .await
