@@ -25,6 +25,8 @@ fn folder_for(kind: Option<&str>) -> &'static str {
     match kind {
         Some("hospital_logo") => "nexuscare/hospital_logos",
         Some("worker_avatar") => "nexuscare/worker_avatars",
+        Some("handover") => "nexuscare/handovers",
+        Some("shift") => "nexuscare/shifts",
         _ => "nexuscare/uploads",
     }
 }

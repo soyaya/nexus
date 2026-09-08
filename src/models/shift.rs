@@ -188,6 +188,10 @@ pub struct Shift {
     pub broadcast_at: Option<DateTime<Utc>>,
     /// Billing is triggered only when a clinician is successfully booked
     pub billing_triggered_at: Option<DateTime<Utc>>,
+    /// Cloudinary secure_urls of files the hospital attached at creation.
+    /// `#[sqlx(default)]` so column-list SELECTs that omit it still decode.
+    #[sqlx(default)]
+    pub attachment_urls: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -595,6 +599,11 @@ pub struct CreateShiftRequest {
     #[validate(length(max = 1000))]
     pub notes: Option<String>,
 
+    /// Cloudinary secure_urls of files attached at creation (uploaded directly
+    /// from the frontend via the signed-upload flow). Optional.
+    #[serde(default)]
+    pub attachment_urls: Vec<String>,
+
     /// Step 4: institutional verification consent (must be true to publish)
     pub broadcast_consent_confirmed: bool,
 }
@@ -809,6 +818,10 @@ pub struct SubmitHandoverRequest {
     /// F1-H05 — Equipment issues, optional.
     #[validate(length(max = 4000))]
     pub equipment_status: Option<String>,
+    /// Cloudinary secure_urls of images the worker attached (uploaded directly
+    /// from the frontend via the signed-upload flow). Optional.
+    #[serde(default)]
+    pub image_urls: Vec<String>,
 }
 
 /// Response for a handover submission.
@@ -821,12 +834,17 @@ pub struct HandoverResponse {
     pub pending_tasks: serde_json::Value,
     pub instructions: String,
     pub equipment_status: Option<String>,
+    pub image_urls: serde_json::Value,
     pub submitted_at: DateTime<Utc>,
     pub editable_until: DateTime<Utc>,
     pub auto_approve_after: DateTime<Utc>,
     pub hospital_approved_at: Option<DateTime<Utc>>,
     pub revision_requested_at: Option<DateTime<Utc>>,
     pub revision_notes: Option<String>,
+    /// Set when the worker raises a reminder/appeal (hospital hadn't approved
+    /// after a day). Nudges the hospital before the 48h auto-approval.
+    pub appeal_raised_at: Option<DateTime<Utc>>,
+    pub appeal_note: Option<String>,
 }
 
 /// Response body for `POST /api/v1/shifts/{shift_id}/clockout`.
@@ -959,6 +977,15 @@ pub struct NearbyShiftCard {
     pub distance_km: Option<f64>,
     /// Whether the caller has already expressed interest in this shift.
     pub interest_expressed: bool,
+}
+
+/// Body for `POST /api/v1/shifts/{shift_id}/handover/appeal`.
+#[derive(Debug, Clone, Default, Deserialize, Validate, ToSchema)]
+pub struct HandoverAppealRequest {
+    /// Optional message from the worker to the hospital.
+    #[serde(default)]
+    #[validate(length(max = 1000))]
+    pub note: Option<String>,
 }
 
 /// Response body for `GET /api/v1/worker/shifts/nearby`.
