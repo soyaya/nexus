@@ -127,6 +127,7 @@ pub struct AppState {
         crate::handlers::shifts::clock_in,
         crate::handlers::shifts::submit_handover,
         crate::handlers::shifts::get_handover,
+        crate::handlers::shifts::appeal_handover,
         crate::handlers::shifts::clock_out,
         crate::handlers::shifts::request_handover_revision,
         crate::handlers::shifts::approve_handover,
@@ -242,6 +243,7 @@ pub struct AppState {
             crate::models::shift::ClockinMethod,
             crate::models::shift::SubmitHandoverRequest,
             crate::models::shift::HandoverResponse,
+            crate::models::shift::HandoverAppealRequest,
             crate::models::shift::ClockoutResponse,
             crate::models::shift::HandoverRevisionRequest,
             crate::models::shift::HospitalRatingDimensions,
@@ -858,6 +860,11 @@ pub fn create_router(
         .route(
             "/api/v1/shifts/{shift_id}/clockout",
             post(shifts::clock_out).route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/handover/appeal",
+            post(shifts::appeal_handover)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/handover/revision",

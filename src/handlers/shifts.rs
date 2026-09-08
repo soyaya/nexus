@@ -11,7 +11,8 @@ use crate::{
     models::shift::{
         AcceptShiftRequest, ClockinApprovalDecisionRequest, ClockinApprovalRequest, ClockinRequest,
         ClockinResponse, ClockoutResponse, CreateShiftRequest, DeclineShiftRequest,
-        EditRatingRequest, HandoverResponse, HandoverRevisionRequest, MyApplicationEntry,
+        EditRatingRequest, HandoverAppealRequest, HandoverResponse, HandoverRevisionRequest,
+        MyApplicationEntry,
         NearbyShiftsResponse, RankedInterestedClinician, RateHospitalRequest, RateWorkerRequest,
         RatingResponse, Shift, ShiftApplication, ShiftApplicationRequest, ShiftApplicationsQuery,
         ShiftDetailResponse,
@@ -636,6 +637,45 @@ pub async fn get_handover(
     let row = state
         .shift_service
         .get_handover_for_viewer(shift_id, viewer_user_id, claims.role, viewer_hospital_id)
+        .await
+        .map_err(map_shift_error)?;
+
+    Ok(Json(row))
+}
+
+/// POST /api/v1/shifts/{shift_id}/handover/appeal
+#[utoipa::path(
+    post,
+    path = "/api/v1/shifts/{shift_id}/handover/appeal",
+    params(("shift_id" = Uuid, Path, description = "Shift unique identifier")),
+    request_body = HandoverAppealRequest,
+    responses(
+        (status = 200, description = "Appeal raised; hospital notified", body = HandoverResponse),
+        (status = 401, description = "Missing or invalid token", body = ErrorResponse),
+        (status = 403, description = "Not the assigned worker", body = ErrorResponse),
+        (status = 404, description = "Shift or handover not found", body = ErrorResponse),
+        (status = 409, description = "Too early, already approved, or already appealed", body = ErrorResponse)
+    ),
+    tag = "shifts",
+    summary = "Appeal an unapproved handover",
+    description = "The assigned worker raises a reminder/appeal once the handover has been awaiting hospital approval for more than a day. Records the appeal and emails the hospital."
+)]
+pub async fn appeal_handover(
+    State(state): State<AppState>,
+    Path(shift_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<crate::models::shift::HandoverAppealRequest>,
+) -> AppResult<Json<HandoverResponse>> {
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    let claims = extract_claims(&headers)?;
+    let worker_user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    let row = state
+        .shift_service
+        .appeal_handover(shift_id, worker_user_id, payload.note)
         .await
         .map_err(map_shift_error)?;
 

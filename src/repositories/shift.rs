@@ -579,16 +579,17 @@ impl ShiftRepository {
         pending_tasks: &serde_json::Value,
         instructions: &str,
         equipment_status: Option<&str>,
+        image_urls: &serde_json::Value,
     ) -> Result<crate::models::shift::HandoverResponse, sqlx::Error> {
         sqlx::query_as::<_, crate::models::shift::HandoverResponse>(
             r#"
             INSERT INTO shift_handovers (
                 shift_id, patients_seen, critical_patients, pending_tasks,
-                instructions, equipment_status,
+                instructions, equipment_status, image_urls,
                 submitted_at, editable_until, auto_approve_after
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6,
+                $1, $2, $3, $4, $5, $6, $7,
                 NOW(), NOW() + INTERVAL '1 hour', NOW() + INTERVAL '48 hours'
             )
             ON CONFLICT (shift_id) DO UPDATE
@@ -597,12 +598,14 @@ impl ShiftRepository {
                   pending_tasks     = EXCLUDED.pending_tasks,
                   instructions      = EXCLUDED.instructions,
                   equipment_status  = EXCLUDED.equipment_status,
+                  image_urls        = EXCLUDED.image_urls,
                   updated_at        = NOW()
             RETURNING
                 id, shift_id, patients_seen, critical_patients, pending_tasks,
-                instructions, equipment_status,
+                instructions, equipment_status, image_urls,
                 submitted_at, editable_until, auto_approve_after,
-                hospital_approved_at, revision_requested_at, revision_notes
+                hospital_approved_at, revision_requested_at, revision_notes,
+                appeal_raised_at, appeal_note
             "#,
         )
         .bind(shift_id)
@@ -611,6 +614,7 @@ impl ShiftRepository {
         .bind(pending_tasks)
         .bind(instructions)
         .bind(equipment_status)
+        .bind(image_urls)
         .fetch_one(&self.pool)
         .await
     }
@@ -624,14 +628,42 @@ impl ShiftRepository {
         sqlx::query_as::<_, crate::models::shift::HandoverResponse>(
             r#"
             SELECT id, shift_id, patients_seen, critical_patients, pending_tasks,
-                   instructions, equipment_status,
+                   instructions, equipment_status, image_urls,
                    submitted_at, editable_until, auto_approve_after,
-                   hospital_approved_at, revision_requested_at, revision_notes
+                   hospital_approved_at, revision_requested_at, revision_notes,
+                   appeal_raised_at, appeal_note
             FROM shift_handovers
             WHERE shift_id = $1
             "#,
         )
         .bind(shift_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Record a worker's handover appeal. Only succeeds when the handover was
+    /// submitted more than a day ago, is not yet approved, and hasn't already
+    /// been appealed. Returns the row id, or None if a guard blocked it.
+    pub async fn raise_handover_appeal(
+        &self,
+        shift_id: Uuid,
+        note: Option<&str>,
+    ) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"
+            UPDATE shift_handovers
+               SET appeal_raised_at = NOW(),
+                   appeal_note      = $2,
+                   updated_at       = NOW()
+             WHERE shift_id = $1
+               AND hospital_approved_at IS NULL
+               AND appeal_raised_at IS NULL
+               AND submitted_at <= NOW() - INTERVAL '1 day'
+            RETURNING id
+            "#,
+        )
+        .bind(shift_id)
+        .bind(note)
         .fetch_optional(&self.pool)
         .await
     }
@@ -1656,12 +1688,12 @@ impl ShiftRepository {
                 pay_type, rate_kobo_per_hour, fixed_rate_kobo, stat_bonus_kobo,
                 effective_rate_kobo_per_hour, grand_total_kobo,
                 shift_label, job_description, notes, created_by, broadcast_consent_confirmed,
-                created_at, updated_at
+                attachment_urls, created_at, updated_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                $20, $21, $22, $23, $24, NOW(), NOW()
+                $20, $21, $22, $23, $24, $25, NOW(), NOW()
             )
             "#,
         )
@@ -1689,6 +1721,13 @@ impl ShiftRepository {
         .bind(&request.notes)
         .bind(created_by)
         .bind(request.broadcast_consent_confirmed)
+        .bind(serde_json::Value::Array(
+            request
+                .attachment_urls
+                .iter()
+                .map(|u| serde_json::Value::String(u.clone()))
+                .collect(),
+        ))
         .execute(&mut **tx)
         .await?;
 
@@ -1742,7 +1781,8 @@ impl ShiftRepository {
                 s.effective_rate_kobo_per_hour, s.grand_total_kobo,
                 s.shift_label, s.job_description, s.draft_quality_score, s.notes,
                 s.created_by, s.broadcast_consent_confirmed, s.matched_clinicians_at_publish,
-                s.broadcast_at, s.billing_triggered_at, s.created_at, s.updated_at
+                s.broadcast_at, s.billing_triggered_at, s.attachment_urls,
+                s.created_at, s.updated_at
             FROM shifts s
             LEFT JOIN hospitals h ON s.hospital_id = h.id
             WHERE s.id = $1
